@@ -1,0 +1,1 @@
+# japan-post-stamp-bot
