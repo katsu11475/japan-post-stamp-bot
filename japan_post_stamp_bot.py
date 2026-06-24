@@ -24,7 +24,7 @@ def load_state() -> dict:
     try:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"last_id": 12499}
+        return {"last_id": 12498}
 
 
 def save_state(state: dict):
@@ -62,10 +62,6 @@ def scrape_detail(stamp_id: int) -> dict | None:
     if not iso_date:
         return None
 
-    # 住所から郵便番号を除いた住所文字列を取得
-    address_raw = fields.get("開設場所", "")
-    address = re.sub(r"〒\d{3}-\d{4}\s*", "", address_raw).strip()
-
     return {
         "id": stamp_id,
         "郵便局名": h1.get_text(strip=True),
@@ -73,7 +69,6 @@ def scrape_detail(stamp_id: int) -> dict | None:
         "意匠図案説明": fields["意匠図案説明"],
         "備考": fields.get("備考", ""),
         "印面": img_src,
-        "住所": address,
         "url": DETAIL_URL.format(stamp_id),
     }
 
@@ -101,9 +96,6 @@ def save_to_notion(stamp: dict):
 
     if stamp["印面"]:
         properties["印面"] = {"url": stamp["印面"]}
-
-    if stamp["住所"]:
-        properties["場所"] = {"location": {"address": stamp["住所"]}}
 
     body = {
         "parent": {"database_id": NOTION_DATABASE_ID},
