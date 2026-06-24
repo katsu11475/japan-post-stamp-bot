@@ -33,11 +33,26 @@ def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def scrape_detail(stamp_id: int) -> dict | None:
-    res = requests.get(DETAIL_URL.format(stamp_id), headers=HEADERS, timeout=15)
-    if res.status_code == 404:
+def scrape_detail(stamp_id: int, max_retries: int = 3) -> dict | None:
+    for attempt in range(max_retries):
+        try:
+            res = requests.get(DETAIL_URL.format(stamp_id), headers=HEADERS, timeout=15)
+            if res.status_code == 404:
+                return None
+            if res.status_code >= 500:
+                wait = 2 ** attempt
+                print(f"  scrape {stamp_id}: HTTP {res.status_code}, retry in {wait}s... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            res.raise_for_status()
+            break
+        except requests.exceptions.RequestException as e:
+            wait = 2 ** attempt
+            print(f"  scrape {stamp_id}: {e}, retry in {wait}s... (attempt {attempt + 1}/{max_retries})")
+            time.sleep(wait)
+    else:
+        print(f"  scrape {stamp_id}: 全リトライ失敗、スキップします")
         return None
-    res.raise_for_status()
     res.encoding = res.apparent_encoding
     soup = BeautifulSoup(res.text, "html.parser")
 
