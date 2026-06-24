@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +19,7 @@ HEADERS = {
     "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
     "Referer": BASE_URL + "/enjoy/culture/stamp/fuke/",
 }
+REQUEST_INTERVAL = float(os.environ.get("REQUEST_INTERVAL", "2"))  # seconds
 
 
 def load_state() -> dict:
@@ -86,56 +88,64 @@ def save_to_notion(stamp: dict):
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
     }
-
     properties: dict = {
         "郵便局": {"title": [{"text": {"content": stamp["郵便局名"]}}]},
         "使用開始日": {"date": {"start": stamp["使用開始日"]}},
         "意匠図案説明": {"rich_text": [{"text": {"content": stamp["意匠図案説明"][:2000]}}]},
         "備考": {"rich_text": [{"text": {"content": stamp["備考"][:2000]}}]},
     }
-
     if stamp["印面"]:
         properties["印面"] = {"url": stamp["印面"]}
-
     body = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": properties,
     }
-
     if stamp["印面"]:
         body["cover"] = {"type": "external", "external": {"url": stamp["印面"]}}
-
-    res = requests.post(
-        "https://api.notion.com/v1/pages",
-        headers=headers,
-        json=body,
-        timeout=15,
-    )
+    res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=body, timeout=15)
     res.raise_for_status()
 
 
 def main():
-    state = load_state()
-    current_id = state["last_id"] + 1
-    new_count = 0
-    consecutive_missing = 0
+    start_id = int(os.environ.get("START_ID", "0"))
+    end_id = int(os.environ.get("END_ID", "0"))
+    range_mode = start_id > 0 and end_id > 0
 
-    while consecutive_missing < 5:
-        stamp = scrape_detail(current_id)
-        if stamp is None:
-            consecutive_missing += 1
-            current_id += 1
-            continue
-
+    if range_mode:
+        # 範囲指定モード：start_id から end_id を処理し、seen_stamps.json は更新しない
+        print(f"範囲モード: ID {start_id} 〜 {end_id}")
+        new_count = 0
+        for stamp_id in range(start_id, end_id + 1):
+            stamp = scrape_detail(stamp_id)
+            time.sleep(REQUEST_INTERVAL)
+            if stamp is None:
+                print(f"  skip: {stamp_id}")
+                continue
+            save_to_notion(stamp)
+            print(f"  登録: {stamp['郵便局名']} (ID: {stamp_id})")
+            new_count += 1
+        print(f"完了: {new_count}件 登録しました")
+    else:
+        # 通常モード：last_id の続きから新着をチェック
+        state = load_state()
+        current_id = state["last_id"] + 1
+        new_count = 0
         consecutive_missing = 0
-        save_to_notion(stamp)
-        print(f"Notion登録: {stamp['郵便局名']} (ID: {current_id})")
-        new_count += 1
-        state["last_id"] = current_id
-        current_id += 1
-
-    save_state(state)
-    print(f"完了: {new_count}件 登録しました")
+        while consecutive_missing < 5:
+            stamp = scrape_detail(current_id)
+            time.sleep(REQUEST_INTERVAL)
+            if stamp is None:
+                consecutive_missing += 1
+                current_id += 1
+                continue
+            consecutive_missing = 0
+            save_to_notion(stamp)
+            print(f"Notion登録: {stamp['郵便局名']} (ID: {current_id})")
+            new_count += 1
+            state["last_id"] = current_id
+            current_id += 1
+        save_state(state)
+        print(f"完了: {new_count}件 登録しました")
 
 
 if __name__ == "__main__":

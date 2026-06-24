@@ -1,0 +1,40 @@
+name: Bulk Import Fukeiin
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_id:
+        description: "開始ID"
+        required: true
+        default: "1"
+      end_id:
+        description: "終了ID"
+        required: true
+        default: "1000"
+      interval:
+        description: "リクエスト間隔(秒)"
+        required: false
+        default: "2"
+
+jobs:
+  bulk-import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests beautifulsoup4
+
+      - name: 一括取り込み
+        run: python japan_post_stamp_bot.py
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          START_ID: ${{ inputs.start_id }}
+          END_ID: ${{ inputs.end_id }}
+          REQUEST_INTERVAL: ${{ inputs.interval }}
