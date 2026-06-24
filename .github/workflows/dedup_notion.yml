@@ -1,0 +1,24 @@
+name: Deduplicate Notion
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dedup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests
+
+      - name: 郵便局重複削除（使用開始日が最新のもの以外を削除）
+        run: python dedup_notion.py
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
