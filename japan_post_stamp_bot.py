@@ -82,7 +82,7 @@ def parse_jp_date(text: str) -> str | None:
     return date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
 
 
-def save_to_notion(stamp: dict):
+def save_to_notion(stamp: dict, max_retries: int = 5):
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Content-Type": "application/json",
@@ -102,8 +102,32 @@ def save_to_notion(stamp: dict):
     }
     if stamp["印面"]:
         body["cover"] = {"type": "external", "external": {"url": stamp["印面"]}}
-    res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=body, timeout=15)
-    res.raise_for_status()
+
+    for attempt in range(max_retries):
+        try:
+            res = requests.post(
+                "https://api.notion.com/v1/pages",
+                headers=headers,
+                json=body,
+                timeout=30,
+            )
+            if res.status_code == 429:
+                retry_after = int(res.headers.get("Retry-After", "10"))
+                print(f"  Notion rate limit, waiting {retry_after}s...")
+                time.sleep(retry_after)
+                continue
+            res.raise_for_status()
+            return
+        except requests.exceptions.Timeout:
+            wait = 2 ** attempt
+            print(f"  Notion timeout (attempt {attempt + 1}/{max_retries}), retry in {wait}s...")
+            time.sleep(wait)
+        except requests.exceptions.RequestException as e:
+            wait = 2 ** attempt
+            print(f"  Notion error (attempt {attempt + 1}/{max_retries}): {e}, retry in {wait}s...")
+            time.sleep(wait)
+
+    raise RuntimeError(f"Notion API failed after {max_retries} attempts for {stamp['郵便局名']}")
 
 
 def main():
