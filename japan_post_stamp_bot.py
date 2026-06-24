@@ -1,87 +1,141 @@
-import hashlib
 import json
 import os
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import date
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
 
-DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK"]
+NOTION_TOKEN = os.environ["NOTION_TOKEN"]
+NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 STATE_FILE = Path("seen_stamps.json")
-STAMP_URL = "https://www.post.japanpost.jp/kitte/new/"
 BASE_URL = "https://www.post.japanpost.jp"
+DETAIL_URL = BASE_URL + "/enjoy/culture/stamp/fuke/detail.php?id={}"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+    "Referer": BASE_URL + "/enjoy/culture/stamp/fuke/",
+}
 
-JST = timezone(timedelta(hours=9))
 
-
-def load_seen() -> set:
+def load_state() -> dict:
     try:
-        return set(json.loads(STATE_FILE.read_text(encoding="utf-8")))
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
-        return set()
+        return {"last_id": 12498}
 
 
-def save_seen(seen: set):
-    STATE_FILE.write_text(
-        json.dumps(sorted(seen), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+def save_state(state: dict):
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def fetch_stamps() -> list[dict]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; StampBot/1.0)"}
-    res = requests.get(STAMP_URL, headers=headers, timeout=10)
+def scrape_detail(stamp_id: int) -> dict | None:
+    res = requests.get(DETAIL_URL.format(stamp_id), headers=HEADERS, timeout=15)
+    if res.status_code == 404:
+        return None
     res.raise_for_status()
     res.encoding = res.apparent_encoding
     soup = BeautifulSoup(res.text, "html.parser")
 
-    stamps = []
-    seen_urls: set[str] = set()
+    h1 = soup.select_one("h1")
+    if not h1:
+        return None
 
-    for a in soup.select("a[href]"):
-        href: str = a["href"]
-        title = a.get_text(" ", strip=True)
-        if not title or len(title) < 4:
-            continue
-        full_url = href if href.startswith("http") else BASE_URL + href
-        if full_url in seen_urls:
-            continue
-        seen_urls.add(full_url)
-        stamp_id = hashlib.md5(full_url.encode()).hexdigest()
-        stamps.append({"id": stamp_id, "title": title[:100], "url": full_url})
+    fields: dict[str, str] = {}
+    for dl in soup.select("div.stampdata dl"):
+        dt = dl.select_one("dt")
+        dd = dl.select_one("dd")
+        if dt and dd:
+            fields[dt.get_text(strip=True)] = dd.get_text("\n", strip=True)
 
-    return stamps
+    if not fields.get("使用開始日") or not fields.get("意匠図案説明"):
+        return None
+
+    img = soup.select_one("img.layout_tate")
+    img_src = img["src"] if img else None
+    if img_src and not img_src.startswith("http"):
+        img_src = BASE_URL + img_src
+
+    iso_date = parse_jp_date(fields["使用開始日"])
+    if not iso_date:
+        return None
+
+    return {
+        "id": stamp_id,
+        "郵便局名": h1.get_text(strip=True),
+        "使用開始日": iso_date,
+        "意匠図案説明": fields["意匠図案説明"],
+        "備考": fields.get("備考", ""),
+        "印面": img_src,
+        "url": DETAIL_URL.format(stamp_id),
+    }
 
 
-def send_to_discord(stamps: list[dict]):
-    today = datetime.now(JST).strftime("%Y年%m月%d日")
-    lines = [f"**📮 日本郵便 新着切手情報 — {today}**", "━" * 20, ""]
+def parse_jp_date(text: str) -> str | None:
+    m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", text)
+    if not m:
+        return None
+    return date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
 
-    for s in stamps[:10]:
-        lines.append(f"🔖 **{s['title']}**")
-        lines.append(f"🔗 {s['url']}")
-        lines.append("")
 
-    lines.append("━" * 20)
+def save_to_notion(stamp: dict):
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
 
-    res = requests.post(DISCORD_WEBHOOK, json={"content": "\n".join(lines)})
+    properties: dict = {
+        "郵便局": {"title": [{"text": {"content": stamp["郵便局名"]}}]},
+        "使用開始日": {"date": {"start": stamp["使用開始日"]}},
+        "意匠図案説明": {"rich_text": [{"text": {"content": stamp["意匠図案説明"][:2000]}}]},
+        "備考": {"rich_text": [{"text": {"content": stamp["備考"][:2000]}}]},
+    }
+
+    if stamp["印面"]:
+        properties["印面"] = {"url": stamp["印面"]}
+
+    body = {
+        "parent": {"database_id": NOTION_DATABASE_ID},
+        "properties": properties,
+    }
+
+    if stamp["印面"]:
+        body["cover"] = {"type": "external", "external": {"url": stamp["印面"]}}
+
+    res = requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=headers,
+        json=body,
+        timeout=15,
+    )
     res.raise_for_status()
-    print(f"Discord送信完了: {len(stamps)}件")
 
 
 def main():
-    seen = load_seen()
-    all_stamps = fetch_stamps()
-    new_stamps = [s for s in all_stamps if s["id"] not in seen]
+    state = load_state()
+    current_id = state["last_id"] + 1
+    new_count = 0
+    consecutive_missing = 0
 
-    if new_stamps:
-        send_to_discord(new_stamps)
-        seen.update(s["id"] for s in new_stamps)
-        save_seen(seen)
-        print(f"新着切手 {len(new_stamps)}件 を通知しました")
-    else:
-        print("新着切手情報はありません")
+    while consecutive_missing < 5:
+        stamp = scrape_detail(current_id)
+        if stamp is None:
+            consecutive_missing += 1
+            current_id += 1
+            continue
+
+        consecutive_missing = 0
+        save_to_notion(stamp)
+        print(f"Notion登録: {stamp['郵便局名']} (ID: {current_id})")
+        new_count += 1
+        state["last_id"] = current_id
+        current_id += 1
+
+    save_state(state)
+    print(f"完了: {new_count}件 登録しました")
 
 
 if __name__ == "__main__":

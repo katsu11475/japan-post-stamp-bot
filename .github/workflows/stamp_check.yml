@@ -2,7 +2,9 @@ name: Japan Post Stamp Bot
 
 on:
   schedule:
-    - cron: "0 1 * * *"  # UTC 01:00 = JST 10:00
+    - cron: "0 23 * * *"  # UTC 23:00 = JST 08:00
+    - cron: "0 3 * * *"   # UTC 03:00 = JST 12:00
+    - cron: "0 13 * * *"  # UTC 13:00 = JST 22:00
   workflow_dispatch:
 
 jobs:
@@ -23,12 +25,13 @@ jobs:
       - name: 依存パッケージをインストール
         run: pip install requests beautifulsoup4
 
-      - name: 新着切手を確認してDiscordに送信
+      - name: 新着風景印を確認してNotionに登録
         run: python japan_post_stamp_bot.py
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
 
-      - name: 確認済みデータをコミット
+      - name: 確認済みIDをコミット
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
